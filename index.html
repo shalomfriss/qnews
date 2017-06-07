@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+	<title>Bad TV Shader for Three.js</title>
+	<meta charset='utf-8'>
+	<style>
+	body {
+		background-color: #000;
+		margin: 0px;
+		overflow: hidden;
+	}
+
+	#info {
+		color: #fff;
+		position: absolute;
+		bottom: 20px;
+		padding: 5px 20px;
+		font-family: 'Helvetica Neue', Arial, Helvetica, sans-serif;
+		font-weight: 100;
+		font-size: 18px;
+		background-color: #000;
+	}
+
+	a{
+		color: #DDD;				
+	}
+	#rss-feeds {
+		display: none;
+	}
+	</style>
+</head>
+<body>
+	
+	<script src="lib/jquery-1.6.4.min.js"></script>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.8.4/moment.min.js"></script>
+	<script src="lib/jquery.rss.js"></script>
+	
+	<div id="rss-feeds"></div>
+	
+	<div id='container'></div>
+
+	<script src='lib/three.min.js'></script>
+	<script src='lib/dat.gui.min.js'></script>
+	<script src='lib/stats.min.js'></script>
+	<script src='lib/postprocessing/EffectComposer.js'></script>
+	<script src='lib/postprocessing/RenderPass.js'></script>
+	<script src='lib/postprocessing/ShaderPass.js'></script>
+	<script src='lib/postprocessing/MaskPass.js'></script> 
+	<script src='lib/shaders/CopyShader.js'></script>
+	<script src='lib/shaders/FilmShader.js'></script>
+	<script src='lib/shaders/RGBShiftShader.js'></script>
+	<script src='js/BadTVShader.js'></script>
+	<script src='js/StaticShader.js'></script>
+	
+	
+	<script>
+
+		//Bad TV Shader Demo
+		//Using Three.js r.75
+		//by Felix Turner / www.airtight.cc / @felixturner
+
+		var camera, scene, renderer;
+		var video, videoTexture,videoMaterial;
+		var composer;
+		var shaderTime = 0;
+		var badTVParams, badTVPass;		
+		var staticParams, staticPass;		
+		var rgbParams, rgbPass;	
+		var filmParams, filmPass;	
+		var renderPass, copyPass;
+		var gui;
+		var pnoise, globalParams;
+
+		init();
+		animate();
+		
+		function init() {
+			
+			camera = new THREE.PerspectiveCamera(55, 1080/ 720, 20, 3000);
+			camera.position.z = 1000;
+			scene = new THREE.Scene();
+
+			//Load Video
+			video = document.createElement( 'video' );
+			video.loop = true;
+			video.src = 'res/news.mp4';
+			video.play();
+			
+			
+			//init video texture
+			videoTexture = new THREE.Texture( video );
+			videoTexture.minFilter = THREE.LinearFilter;
+			videoTexture.magFilter = THREE.LinearFilter;
+
+			videoMaterial = new THREE.MeshBasicMaterial( {
+				map: videoTexture
+			} );
+
+			//Add video plane
+			var planeGeometry = new THREE.PlaneGeometry( 1080, 720,1,1 );
+			var plane = new THREE.Mesh( planeGeometry, videoMaterial );
+			scene.add( plane );
+			plane.z = 0;
+			plane.scale.x = plane.scale.y = 1.45;
+
+			//add stats
+			/*
+			stats = new Stats();
+			stats.domElement.style.position = 'absolute';
+			stats.domElement.style.top = '0px';
+			container.appendChild( stats.domElement );
+			*/
+			
+			//init renderer
+			renderer = new THREE.WebGLRenderer();
+			renderer.setSize( 800, 600 );
+			document.body.appendChild( renderer.domElement );
+
+			//POST PROCESSING
+			//Create Shader Passes
+			renderPass = new THREE.RenderPass( scene, camera );
+			badTVPass = new THREE.ShaderPass( THREE.BadTVShader );
+			rgbPass = new THREE.ShaderPass( THREE.RGBShiftShader );
+			filmPass = new THREE.ShaderPass( THREE.FilmShader );
+			staticPass = new THREE.ShaderPass( THREE.StaticShader );
+			copyPass = new THREE.ShaderPass( THREE.CopyShader );
+
+			//set shader uniforms
+			filmPass.uniforms.grayscale.value = 0;
+
+			//Init DAT GUI control panel
+			badTVParams = {
+				mute:true,
+				show: true,
+				distortion: 3.0,
+				distortion2: 1.0,
+				speed: 0.3,
+				rollSpeed: 0.1
+			};
+
+			staticParams = {
+				show: true,
+				amount:0.5,
+				size:4.0
+			};
+
+			rgbParams = {
+				show: true,
+				amount: 0.005,
+				angle: 0.0,
+			};
+
+			filmParams = {
+				show: true,
+				count: 800,
+				sIntensity: 0.9,
+				nIntensity: 0.4
+			};
+			
+
+			onToggleShaders();
+			onToggleMute();
+			onParamsChange();
+
+			window.addEventListener('resize', onResize, false);
+			renderer.domElement.addEventListener('click', randomizeParams, false);
+			onResize();
+			//randomizeParams();
+			unglitch();
+		}
+
+		function onParamsChange() {
+
+			//copy gui params into shader uniforms
+			badTVPass.uniforms[ 'distortion' ].value = badTVParams.distortion;
+			badTVPass.uniforms[ 'distortion2' ].value = badTVParams.distortion2;
+			badTVPass.uniforms[ 'speed' ].value = badTVParams.speed;
+			badTVPass.uniforms[ 'rollSpeed' ].value = badTVParams.rollSpeed;
+
+			staticPass.uniforms[ 'amount' ].value = staticParams.amount;
+			staticPass.uniforms[ 'size' ].value = staticParams.size;
+
+			rgbPass.uniforms[ 'angle' ].value = rgbParams.angle*Math.PI;
+			rgbPass.uniforms[ 'amount' ].value = rgbParams.amount;
+
+			filmPass.uniforms[ 'sCount' ].value = filmParams.count;
+			filmPass.uniforms[ 'sIntensity' ].value = filmParams.sIntensity;
+			filmPass.uniforms[ 'nIntensity' ].value = filmParams.nIntensity;
+			
+			this.printParams();
+		}
+
+		function printParams()
+		{
+			console.log("PARAMS: --------------");
+			console.log("badTVParams.distortion = " + badTVParams.distortion);
+			console.log("badTVParams.distortion2 = " + badTVParams.distortion2);
+			console.log("badTVParams.speed = " + badTVParams.speed);
+			console.log("badTVParams.rollSpeed = " + badTVParams.rollSpeed);
+			console.log("rgbParams.angle = " + rgbParams.angle);
+			console.log("rgbParams.amount = " + rgbParams.amount);
+			console.log("staticParams.amount = " + staticParams.amount);
+		}
+		
+		function unglitch()
+		{
+			badTVParams.distortion = 0.1
+			badTVParams.distortion2 = 0.1
+			badTVParams.speed = 0
+			badTVParams.rollSpeed = 0
+			rgbParams.angle = 0
+			rgbParams.amount = 0
+			staticParams.amount = 0
+		}
+		
+		function glitch()
+		{
+			badTVParams.distortion = 8.87063269062534;
+			badTVParams.distortion2 = 2.7964451767733323;
+			badTVParams.speed = 0.09768033463124333;
+			badTVParams.rollSpeed = 0.018213662907565587;
+			rgbParams.angle = 0.5071297735640923;
+			rgbParams.amount = 0.02851634774077017;
+			staticParams.amount = 0.07818338181443761;
+			
+		}
+		function randomizeParams() {
+
+			if (Math.random() <0.2){
+				//you fixed it!
+				badTVParams.distortion = 0.1;
+				badTVParams.distortion2 =0.1;
+				badTVParams.speed =0;
+				badTVParams.rollSpeed =0;
+				rgbParams.angle = 0;
+				rgbParams.amount = 0;
+				staticParams.amount = 0;
+
+			}else{
+				badTVParams.distortion = Math.random()*10+0.1;
+				badTVParams.distortion2 =Math.random()*10+0.1;
+				badTVParams.speed =Math.random()*0.4;
+				badTVParams.rollSpeed =Math.random()*0.2;
+				rgbParams.angle = Math.random()*2;
+				rgbParams.amount = Math.random()*0.03;
+				staticParams.amount = Math.random()*0.2;
+			}
+			
+			onParamsChange();
+		}
+
+		function onToggleMute(){
+			video.volume  = badTVParams.mute ? 0 : 1;
+		}
+		
+		function onToggleShaders(){
+
+			//Add Shader Passes to Composer
+			//order is important 
+			composer = new THREE.EffectComposer( renderer);
+			composer.addPass( renderPass );
+			
+			if (filmParams.show){
+				composer.addPass( filmPass );
+			}
+
+			if (badTVParams.show){
+				composer.addPass( badTVPass );
+			}
+
+			if (rgbParams.show){
+				composer.addPass( rgbPass );
+			}
+
+			if (staticParams.show){
+				composer.addPass( staticPass );
+			}
+
+			composer.addPass( copyPass );
+			copyPass.renderToScreen = true;
+		}
+
+		function animate() {
+
+			shaderTime += 0.1;
+			badTVPass.uniforms[ 'time' ].value =  shaderTime;
+			filmPass.uniforms[ 'time' ].value =  shaderTime;
+			staticPass.uniforms[ 'time' ].value =  shaderTime;
+
+			if ( video.readyState === video.HAVE_ENOUGH_DATA ) {
+				if ( videoTexture ) videoTexture.needsUpdate = true;
+			}
+
+			requestAnimationFrame( animate );
+			composer.render( 0.1);
+			
+			///stats.update();
+		}
+		
+
+
+		function onResize() {
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+		}
+		
+		
+		/****TEXT********************************/
+		
+		var textSprite;
+		
+  	  var text = "aems",
+        height = 2,
+        size = 80,
+        curveSegments = 10,
+        bevelThickness = 1,
+        bevelSize = 0.3,
+        bevelSegments = 3,
+        bevelEnabled = true,
+        font = undefined
+		
+		var root = this;
+	    function loadFont() {
+	      var loader = new THREE.FontLoader();
+	      loader.load('lib/helvetiker_regular.typeface.js', function (res) {
+	        font = res;
+	        root.createText();
+			console.log("TEST");
+			console.log(root.createText);
+			
+	      });
+	    }
+		
+		
+		
+		/*	
+		categories
+		content
+		contentSnippet
+		link
+		publishedDate
+		title
+		*/
+		var log = console.log.bind(console);
+		
+	    function createText(theText) {
+			log("test");
+			var words = theText.title.split(" ");
+			log(words);
+			var lines = [];
+			var str = "";
+    		for(var i = 0; i < words.length; i ++)
+    		{
+				log(words[i] + ":" + words[i].length);
+				
+    		 	if(str.length + words[i].length < 30)
+				{
+					str += " " + words[i];
+					if( i + 1 >= words.length)
+					{
+						lines.push(str);
+					}
+				}
+				else
+				{
+					lines.push(str);
+					str = words[i];
+				}
+    		}
+			
+			log(lines);
+		  
+			lines.reverse();
+  		  if(textSprite)
+  		  {
+  			  scene.remove(textSprite);
+  		  }
+		  textSprite = new THREE.Object3D();
+		  scene.add(textSprite);
+		  
+			for(var i = 0; i < lines.length; i++)
+			{
+	  	      textGeo = new THREE.TextGeometry( lines[i], {
+	  	        font: font,
+	  	        size: size,
+	  	        height: height,
+	  	        curveSegments:curveSegments,
+	  	        weight: "normal",
+	  	        bevelThickness:bevelThickness,
+	  	        bevelSize:bevelSize,
+	  	        bevelSegments:bevelSegments,
+	  	        bevelEnabled:bevelEnabled
+	  	      });
+			  var cubeMat = new THREE.MeshBasicMaterial({color: 0xffffff})
+		      textGeo.computeBoundingBox();
+		      textGeo.computeVertexNormals();
+			  
+		      var mesh = new THREE.Mesh(textGeo, cubeMat);
+			  mesh.name = "text";
+		      mesh.position.x = -textGeo.boundingBox.max.x/2;
+			  mesh.position.y = i * 100;
+		      mesh.castShadow = true;
+			  
+			  textSprite.add(mesh);
+		      
+			}
+			
+	      
+		  
+		  
+		  
+		 
+		  
+		 
+	      
+		  
+		  
+	  }
+		  
+		
+		/****FEEDS********************************/
+		
+		var feeds = [];
+		var root = this;
+		$.getJSON( "feeds1.json", function( data ) {
+			
+			console.log(data);
+			for(var x in data)
+			{
+				feeds.push(x);
+			}
+			
+		  	root.go();
+		});
+		
+		loadFont();
+		
+		
+		//http://feeds.feedburner.com/premiumpixels
+		function go()
+		{
+			var root = this;
+			
+			var r = Math.round(Math.random() * feeds.length);
+			jQuery(function($) {
+				$("#rss-feeds").rss(feeds[r], {onData: function(data){
+					console.log("Done");
+					console.log(this.entries[0]);
+					root.createText(this.entries[0]);
+					
+				}, limit:1});
+				
+			});
+			
+			
+			setTimeout(function(){
+				root.go();
+			}, 3000);
+		}
+			  
+
+	</script>
+			  
+			  
+</body>
+</html>
